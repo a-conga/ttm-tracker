@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TTM Tracker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; background: #f5f5f5; color: #1a1a1a; }
+
+  header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 12px 20px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 15px; font-weight: 600; }
+  header span { font-size: 12px; color: #888; }
+
+  .toolbar { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 8px 20px; display: flex; gap: 8px; align-items: center; }
+  button { font-size: 12px; padding: 5px 14px; border-radius: 4px; border: 1px solid #d0d0d0; background: #fff; cursor: pointer; font-family: inherit; color: #1a1a1a; }
+  button:hover { background: #f0f0f0; }
+  button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  button.primary:hover { background: #1558b0; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .progress { font-size: 12px; color: #555; margin-left: 8px; }
+
+  .grid-wrap { overflow: auto; height: calc(100vh - 90px); }
+
+  table { border-collapse: collapse; width: 100%; min-width: 700px; }
+  thead th {
+    background: #f8f8f8;
+    border: 1px solid #d8d8d8;
+    padding: 6px 10px;
+    text-align: left;
+    font-weight: 500;
+    font-size: 12px;
+    color: #555;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    white-space: nowrap;
+    user-select: none;
+  }
+  thead th:first-child { width: 36px; text-align: center; background: #f0f0f0; }
+  thead th:nth-child(2) { width: 110px; }
+
+  tbody tr:hover td { background: #f0f7ff; }
+  tbody tr.selected td { background: #e3f0ff; }
+
+  td {
+    border: 1px solid #e0e0e0;
+    padding: 0;
+    height: 24px;
+    vertical-align: middle;
+  }
+  td:first-child { text-align: center; color: #aaa; font-size: 11px; background: #fafafa; border-color: #d8d8d8; user-select: none; }
+
+  td input {
+    width: 100%;
+    height: 100%;
+    border: none;
+    outline: none;
+    padding: 0 8px;
+    font-size: 13px;
+    font-family: inherit;
+    background: transparent;
+    color: #1a1a1a;
+  }
+  td input:focus { background: #fff; box-shadow: inset 0 0 0 2px #1a73e8; }
+  td.readonly { padding: 0 8px; color: #1a1a1a; }
+  td.readonly.number { text-align: right; font-variant-numeric: tabular-nums; }
+  td.status-ok { color: #188038; font-size: 11px; padding: 0 8px; }
+  td.status-err { color: #c5221f; font-size: 11px; padding: 0 8px; }
+  td.status-loading { color: #888; font-size: 11px; padding: 0 8px; font-style: italic; }
+
+  .add-row { display: block; width: 100%; text-align: left; padding: 5px 10px; font-size: 12px; color: #888; border: none; background: #fff; border-bottom: 1px solid #e0e0e0; border-right: none; border-left: none; cursor: pointer; }
+  .add-row:hover { color: #1a73e8; background: #f5f5f5; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📊 TTM Tracker</h1>
+  <span>FMP data · Revenue & EV in $M</span>
+</header>
+
+<div class="toolbar">
+  <button class="primary" id="btnRefresh">↻ Refresh All</button>
+  <button id="btnAddRow">+ Add Row</button>
+  <button id="btnDeleteRow">✕ Delete Selected</button>
+  <span class="progress" id="progress"></span>
+</div>
+
+<div class="grid-wrap">
+  <table id="grid">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Ticker</th>
+        <th>Company Name</th>
+        <th style="text-align:right">TTM Revenue ($M)</th>
+        <th style="text-align:right">Enterprise Value ($M)</th>
+        <th style="text-align:right">EV / Revenue</th>
+        <th>Last Updated</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <button class="add-row" id="btnAddRowBottom">+ Add ticker</button>
+</div>
+
+<script>
+const TICKERS = [
+  "ADBE","ALK","APPN","ASAN","TEAM","BL","CFLT","CRWD","DCBO.TO",
+  "DOCU","ESTC","SAP","HUBS","INTA","FROG","MLNK","MNDY","NCNO",
+  "OTEX","OKTA","PAYC","PCTY","PRO","CRM","S","NOW","SHOP",
+  "SNOW","CXM","TENB","PATH","VRNS","WDAY","WK"
+];
+
+let rows = TICKERS.map(t => ({ ticker: t, name: "", revenue: "", ev: "", updated: "", status: "" }));
+let selectedRow = null;
+
+const tbody = document.getElementById("tbody");
+const progress = document.getElementById("progress");
+
+function fmt(n) {
+  if (n === "" || n === null || n === undefined) return "";
+  return Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+function fmtMultiple(rev, ev) {
+  if (!rev || !ev || rev === "" || ev === "") return "";
+  const m = parseFloat(ev) / parseFloat(rev);
+  return isNaN(m) ? "" : m.toFixed(1) + "x";
+}
+
+function renderRows() {
+  tbody.innerHTML = "";
+  rows.forEach((row, i) => {
+    const tr = document.createElement("tr");
+    if (selectedRow === i) tr.classList.add("selected");
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td><input value="${row.ticker}" data-i="${i}" class="ticker-input" placeholder="e.g. ADBE" /></td>
+      <td class="readonly">${row.name}</td>
+      <td class="readonly number">${fmt(row.revenue)}</td>
+      <td class="readonly number">${fmt(row.ev)}</td>
+      <td class="readonly number">${fmtMultiple(row.revenue, row.ev)}</td>
+      <td class="readonly">${row.updated}</td>
+      <td class="${row.status === "✓" ? "status-ok" : row.status === "loading" ? "status-loading" : row.status ? "status-err" : ""}">${row.status === "loading" ? "fetching…" : row.status}</td>
+    `;
+    tr.addEventListener("click", () => { selectedRow = i; renderRows(); });
+    tbody.appendChild(tr);
+  });
+
+  // bind ticker input changes
+  document.querySelectorAll(".ticker-input").forEach(inp => {
+    inp.addEventListener("change", e => {
+      const i = parseInt(e.target.dataset.i);
+      rows[i].ticker = e.target.value.trim().toUpperCase();
+      rows[i].name = ""; rows[i].revenue = ""; rows[i].ev = ""; rows[i].updated = ""; rows[i].status = "";
+      renderRows();
+    });
+    inp.addEventListener("click", e => e.stopPropagation());
+  });
+}
+
+async function fetchTicker(ticker) {
+  const res = await fetch(`/.netlify/functions/fmp?ticker=${encodeURIComponent(ticker)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function refreshAll() {
+  const btn = document.getElementById("btnRefresh");
+  btn.disabled = true;
+  let done = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    if (!rows[i].ticker) continue;
+    rows[i].status = "loading";
+    renderRows();
+    progress.textContent = `${done + 1} / ${rows.filter(r => r.ticker).length}`;
+
+    try {
+      const data = await fetchTicker(rows[i].ticker);
+      rows[i].name = data.name || rows[i].ticker;
+      rows[i].revenue = data.revenue !== null ? Math.round(data.revenue / 1e6) : "";
+      rows[i].ev = data.ev !== null ? Math.round(data.ev / 1e6) : "";
+      rows[i].updated = new Date().toLocaleDateString("en-GB");
+      rows[i].status = "✓";
+    } catch(e) {
+      rows[i].status = "Error: " + e.message;
+    }
+
+    done++;
+    renderRows();
+    await new Promise(r => setTimeout(r, 350));
+  }
+
+  progress.textContent = `Done — ${done} tickers refreshed`;
+  btn.disabled = false;
+}
+
+document.getElementById("btnRefresh").addEventListener("click", refreshAll);
+
+document.getElementById("btnAddRow").addEventListener("click", () => {
+  rows.push({ ticker: "", name: "", revenue: "", ev: "", updated: "", status: "" });
+  renderRows();
+});
+document.getElementById("btnAddRowBottom").addEventListener("click", () => {
+  rows.push({ ticker: "", name: "", revenue: "", ev: "", updated: "", status: "" });
+  renderRows();
+});
+
+document.getElementById("btnDeleteRow").addEventListener("click", () => {
+  if (selectedRow === null) return;
+  rows.splice(selectedRow, 1);
+  selectedRow = null;
+  renderRows();
+});
+
+renderRows();
+</script>
+</body>
+</html>
