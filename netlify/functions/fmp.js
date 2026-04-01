@@ -2,70 +2,51 @@ exports.handler = async function(event) {
   const ticker = event.queryStringParameters?.ticker;
   if (!ticker) return { statusCode: 400, body: JSON.stringify({ error: "No ticker" }) };
 
-  const key = process.env.FMP_API_KEY;
-  const base = "https://financialmodelingprep.com/api/v3";
+  const headers = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" };
 
   try {
-    const [incomeRes, evRes, profileRes] = await Promise.all([
-      fetch(`${base}/income-statement/${ticker}?period=quarter&limit=5&apikey=${key}`),
-      fetch(`${base}/enterprise-values/${ticker}?period=quarter&limit=1&apikey=${key}`),
-      fetch(`${base}/profile/${ticker}?apikey=${key}`)
-    ]);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
+    const quoteUrl = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=financialData,defaultKeyStatistics,incomeStatementHistory`;
 
-    const income = await incomeRes.json();
-    const evData = await evRes.json();
-    const profile = await profileRes.json();
+    const res = await fetch(quoteUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://finance.yahoo.com"
+      }
+    });
 
-    // Debug: log what we get back
-    console.log("INCOME:", JSON.stringify(income).slice(0, 300));
-    console.log("EV:", JSON.stringify(evData).slice(0, 300));
+    const data = await res.json();
 
-    if (!Array.isArray(income) || income.length === 0) {
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-        body: JSON.stringify({ error: "No income data for " + ticker })
-      };
+    if (!data?.quoteSummary?.result?.[0]) {
+      return { statusCode: 200, headers, body: JSON.stringify({ error: "No Yahoo data for " + ticker }) };
     }
 
-    // Sum last 4 quarters of revenue
-    const quarters = income.slice(0, 4);
-    const ttmRevenue = quarters.reduce((s, q) => {
-      const r = parseFloat(q.revenue);
-      return s + (isNaN(r) ? 0 : r);
-    }, 0);
+    const result = data.quoteSummary.result[0];
+    const fin = result.financialData;
+    const stats = result.defaultKeyStatistics;
 
-    // EV from enterprise-values endpoint
-    let ev = null;
-    if (Array.isArray(evData) && evData.length > 0) {
-      ev = parseFloat(evData[0].enterpriseValue);
-      if (isNaN(ev)) ev = null;
-    }
+    // TTM Revenue from financialData
+    const revenue = fin?.totalRevenue?.raw ?? null;
 
-    // Fallback: compute EV from profile (marketCap + totalDebt - cashAndEquivalents)
-    if (ev === null && Array.isArray(profile) && profile.length > 0) {
-      const p = profile[0];
-      const mktCap = parseFloat(p.mktCap);
-      ev = isNaN(mktCap) ? null : mktCap;
-    }
+    // Enterprise Value from defaultKeyStatistics
+    const ev = stats?.enterpriseValue?.raw ?? null;
 
-    const name = (Array.isArray(profile) && profile[0]?.companyName) || income[0]?.symbol || ticker;
+    // Company name — fetch from quote endpoint
+    const nameRes = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${ticker}&quotesCount=1`, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+    const nameData = await nameRes.json();
+    const name = nameData?.quotes?.[0]?.longname || nameData?.quotes?.[0]?.shortname || ticker;
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        name,
-        revenue: ttmRevenue || null,
-        ev: ev || null
-      })
+      headers,
+      body: JSON.stringify({ name, revenue, ev })
     };
 
   } catch(e) {
-    return {
-      statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ error: e.message })
-    };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: e.message }) };
   }
 };
